@@ -1190,33 +1190,38 @@ window.addEventListener('scroll', repositionOpenDropdowns, true);
     emptyState.style.display = 'none';
     
     try {
-      // List files in bucket
+      // 1. Fetch file list WITHOUT the broken sortBy parameter
       const { data, error } = await supabase.storage.from(BUCKET_NAME).list('', {
-        limit: 10,
-        sortBy: { column: 'name', order: 'desc' } // Get the latest uploaded
+        limit: 100,
       });
 
       if (error) throw error;
       if (!data || data.length === 0) {
         loadingState.style.display = 'none';
         emptyState.style.display = 'block';
+        showToast('No files found in Supabase bucket', 'info');
         return;
       }
 
-      // Pick the first Excel file found
-      const latestFile = data.find(f => f.name.endsWith('.xlsx') || f.name.endsWith('.xls') || f.name.endsWith('.csv'));
-      if (!latestFile) {
+      // 2. Filter out folders and non-excel files
+      const excelFiles = data.filter(f => f.name.endsWith('.xlsx') || f.name.endsWith('.xls') || f.name.endsWith('.csv'));
+      
+      if (excelFiles.length === 0) {
         loadingState.style.display = 'none';
         emptyState.style.display = 'block';
         showToast('No Excel files found in bucket', 'info');
         return;
       }
 
-      // Download the file
+      // 3. Sort manually by name (descending) to get the "latest" file
+      excelFiles.sort((a, b) => b.name.localeCompare(a.name));
+      const latestFile = excelFiles[0];
+
+      // 4. Download the file
       const { data: fileData, error: dlError } = await supabase.storage.from(BUCKET_NAME).download(latestFile.name);
       if (dlError) throw dlError;
 
-      // Process the blob
+      // 5. Process the blob
       const buffer = await fileData.arrayBuffer();
       processWorkbook(buffer, latestFile.name);
       
