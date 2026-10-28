@@ -1184,18 +1184,21 @@ window.addEventListener('scroll', repositionOpenDropdowns, true);
     }
   }
 
-  // ===== FETCH LATEST FILE FROM SUPABASE STORAGE =====
+   // ===== FETCH LATEST FILE FROM SUPABASE STORAGE =====
   async function loadLatestFromSupabase() {
     loadingState.style.display = 'flex';
     emptyState.style.display = 'none';
     
     try {
-      // 1. Fetch file list WITHOUT the broken sortBy parameter
+      // 1. Fetch file list from the root of the bucket
       const { data, error } = await supabase.storage.from(BUCKET_NAME).list('', {
         limit: 100,
+        offset: 0,
+        sortBy: { column: 'created_at', order: 'desc' }
       });
 
       if (error) throw error;
+      
       if (!data || data.length === 0) {
         loadingState.style.display = 'none';
         emptyState.style.display = 'block';
@@ -1204,7 +1207,11 @@ window.addEventListener('scroll', repositionOpenDropdowns, true);
       }
 
       // 2. Filter out folders and non-excel files
-      const excelFiles = data.filter(f => f.name.endsWith('.xlsx') || f.name.endsWith('.xls') || f.name.endsWith('.csv'));
+      const excelFiles = data.filter(f => 
+        f.name.toLowerCase().endsWith('.xlsx') || 
+        f.name.toLowerCase().endsWith('.xls') || 
+        f.name.toLowerCase().endsWith('.csv')
+      );
       
       if (excelFiles.length === 0) {
         loadingState.style.display = 'none';
@@ -1213,8 +1220,7 @@ window.addEventListener('scroll', repositionOpenDropdowns, true);
         return;
       }
 
-      // 3. Sort manually by name (descending) to get the "latest" file
-      excelFiles.sort((a, b) => b.name.localeCompare(a.name));
+      // 3. The list is already sorted by created_at descending, so the first file is the newest
       const latestFile = excelFiles[0];
 
       // 4. Download the file
