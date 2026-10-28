@@ -698,17 +698,14 @@
         </ul>
         <h4 style="margin:16px 0 10px;">How to Use</h4>
         <ol style="padding-left:20px; line-height:1.8; color:var(--text-muted); font-size:.85rem;">
-          <li><strong>Upload</strong> your Excel file (top-right)</li>
+          <li><strong>Upload</strong> your Excel file (top-right) to Supabase Storage</li>
+          <li><strong>Auto-Load:</strong> When you open the link, it will automatically load the latest file from your Supabase Bucket.</li>
           <li><strong>Filter</strong> by year, month, manager, store, day</li>
           <li><strong>Click any chart bar</strong> to filter by that store/manager</li>
           <li><strong>Click any table row</strong> to see day-wise detail</li>
           <li><strong>Save views</strong> to reuse filter combinations</li>
           <li><strong>Export</strong> to Excel/PDF from the table tab</li>
         </ol>
-        <h4 style="margin:16px 0 10px;">Anomalies Explained</h4>
-        <p style="color:var(--text-muted); font-size:.85rem; line-height:1.6;">
-          Anomalies flag stores with significant YoY changes. When looking at all managers, the threshold is ±50%. When you select a single manager, it drops to ±15% to surface meaningful variations within their portfolio.
-        </p>
       </div>
     </div>
   </div>
@@ -722,6 +719,7 @@ const $ = id => document.getElementById(id);
 const SUPABASE_URL = 'https://gwpzztcojzirwdqdwikq.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd3cHp6dGNvanppcndkcWR3aWtxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMyMjAxNTYsImV4cCI6MjEwODc5NjE1Nn0._TFYNKT1LYj4y6nSJRtmCLiMB756QmEgV_6atAweUu0';
 const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const BUCKET_NAME = 'sales-uploads';
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
@@ -1021,7 +1019,6 @@ window.addEventListener('scroll', repositionOpenDropdowns, true);
   const dayFrom = $('dayFrom'), dayTo = $('dayTo'), resetFilters = $('resetFilters');
 
   function fmtBytes(b) { if (b == null) return ''; if (b < 1024) return b + ' B'; if (b < 1048576) return (b/1024).toFixed(1) + ' KB'; return (b/1048576).toFixed(2) + ' MB'; }
-  function fmtSavedAgo(ts) { if (!ts) return ''; const m = Math.floor((Date.now() - ts) / 60000); if (m < 1) return 'just now'; if (m < 60) return `${m}m ago`; const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`; return `${Math.floor(h/24)}d ago`; }
   function daysInMonth(y, m) { return new Date(y, m, 0).getDate(); }
   function isFormula(v) { if (v == null) return false; const s = String(v).trim(); return s.startsWith('=') || s.includes('#REF!') || s.includes('#N/A') || s.includes('#VALUE!'); }
   function cleanText(v, fb) { if (v == null) return fb; let s = String(v).trim(); if (!s) return fb; if (isFormula(s)) return fb; s = s.replace(/\s+/g,' '); const m = s.match(/^(.+?)\s*-\s*([^-]+)$/); if (m) { const h = m[1].trim(), t = m[2].trim(); if (h.endsWith(t)) s = h; } return s; }
@@ -1173,9 +1170,9 @@ window.addEventListener('scroll', repositionOpenDropdowns, true);
       dayFrom.value = 1; dayTo.value = 31;
       applyFiltersAndRender();
 
-      if (name) { fileName.textContent = name; fileMeta.textContent = `${fmtBytes(buffer.byteLength)} • ${fmtSavedAgo(meta?.savedAt || Date.now())}`; }
+      if (name) { fileName.textContent = name; fileMeta.textContent = `${fmtBytes(buffer.byteLength)}`; }
       showToast(`Loaded ${nStores} stores`, 'success');
-      addNotif(`Uploaded ${name || 'file'} (${nStores} stores)`);
+      addNotif(`Loaded ${name || 'file'} (${nStores} stores)`);
     } catch (err) {
       console.error(err);
       loadingState.style.display = 'none';
@@ -1187,9 +1184,57 @@ window.addEventListener('scroll', repositionOpenDropdowns, true);
     }
   }
 
-  // ===== SUPABASE FILE UPLOAD & DB INSERT =====
+  // ===== FETCH LATEST FILE FROM SUPABASE STORAGE =====
+  async function loadLatestFromSupabase() {
+    loadingState.style.display = 'flex';
+    emptyState.style.display = 'none';
+    
+    try {
+      // List files in bucket
+      const { data, error } = await supabase.storage.from(BUCKET_NAME).list('', {
+        limit: 10,
+        sortBy: { column: 'name', order: 'desc' } // Get the latest uploaded
+      });
+
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        loadingState.style.display = 'none';
+        emptyState.style.display = 'block';
+        return;
+      }
+
+      // Pick the first Excel file found
+      const latestFile = data.find(f => f.name.endsWith('.xlsx') || f.name.endsWith('.xls') || f.name.endsWith('.csv'));
+      if (!latestFile) {
+        loadingState.style.display = 'none';
+        emptyState.style.display = 'block';
+        showToast('No Excel files found in bucket', 'info');
+        return;
+      }
+
+      // Download the file
+      const { data: fileData, error: dlError } = await supabase.storage.from(BUCKET_NAME).download(latestFile.name);
+      if (dlError) throw dlError;
+
+      // Process the blob
+      const buffer = await fileData.arrayBuffer();
+      processWorkbook(buffer, latestFile.name);
+      
+    } catch (err) {
+      console.error("Supabase Load Error:", err);
+      loadingState.style.display = 'none';
+      emptyState.style.display = 'block';
+      showToast('Failed to load from Supabase: ' + err.message, 'error');
+    }
+  }
+
+  // Load automatically on page start
+  loadLatestFromSupabase();
+
+  // ===== UPLOAD NEW FILE TO SUPABASE =====
   fileInput.addEventListener('change', async e => {
     const file = e.target.files[0]; if (!file) return;
+    
     loadingState.style.display = 'flex';
     emptyState.style.display = 'none';
     errorBox.style.display = 'none';
@@ -1198,87 +1243,28 @@ window.addEventListener('scroll', repositionOpenDropdowns, true);
     chartsPanel.style.display = 'none';
     tablePanel.style.display = 'none';
 
-    // 1. Upload to Supabase Storage
-    const filePath = `uploads/${Date.now()}_${file.name}`;
-    const { error: uploadError } = await supabase.storage.from('sales-uploads').upload(filePath, file);
-    if (uploadError) {
-      showToast('Storage upload failed: ' + uploadError.message, 'error');
-      loadingState.style.display = 'none';
-      return;
-    }
-
-    // 2. Parse locally and insert to DB
-    const reader = new FileReader();
-    reader.onload = async evt => {
-      const buf = evt.target.result;
+    try {
+      // 1. Upload to Supabase Storage
+      const filePath = `${file.name}`; // Overwrite if same name, or creates new
+      const { error: uploadError } = await supabase.storage.from(BUCKET_NAME).upload(filePath, file, { upsert: true });
       
-      const originalProcessWorkbook = processWorkbook;
-      processWorkbook = async function(buffer, name, meta) {
-        originalProcessWorkbook(buffer, name, meta);
+      if (uploadError) throw uploadError;
 
-        if (window.__rawData && window.__rawData.length > 0) {
-          const rowsToInsert = window.__rawData.map(r => ({
-            store: r.store, store_code: r.storeCode, area: r.area,
-            dob: r.dobStr, net: r.net, orders: r.orders, target: r.target
-          }));
-          
-          let insertSuccess = true;
-          for (let i = 0; i < rowsToInsert.length; i += 1000) {
-            const { error: dbError } = await supabase.from('sales_data').insert(rowsToInsert.slice(i, i + 1000));
-            if (dbError) {
-              console.error("DB Insert Error:", dbError);
-              showToast('Failed to save some data to database', 'error');
-              insertSuccess = false;
-            }
-          }
-          if (insertSuccess) showToast('Data securely saved to Supabase database!', 'success');
-        }
+      // 2. Read and Process locally so the UI updates immediately
+      const reader = new FileReader();
+      reader.onload = evt => {
+        processWorkbook(evt.target.result, file.name);
       };
-      processWorkbook(buf, file.name, { savedAt: Date.now() });
-    };
-    reader.readAsArrayBuffer(file);
-  });
-
-  // ===== SUPABASE DATA FETCH ON LOAD =====
-  async function loadFromSupabase() {
-    loadingState.style.display = 'flex';
-    emptyState.style.display = 'none';
-    
-    const { data, error } = await supabase.from('sales_data').select('*').order('dob', { ascending: true });
-    
-    if (error || !data || data.length === 0) {
+      reader.readAsArrayBuffer(file);
+      
+      showToast('File securely uploaded to Supabase Storage', 'success');
+    } catch (error) {
+      console.error(error);
+      showToast('Upload failed: ' + error.message, 'error');
       loadingState.style.display = 'none';
       emptyState.style.display = 'block';
-      return;
     }
-
-    const parsedRows = data.map(r => {
-      const d = new Date(r.dob);
-      return {
-        store: r.store, storeCode: r.store_code, area: r.area,
-        dob: d, dobStr: r.dob, year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(),
-        monthLabel: MONTHS[d.getMonth()], orders: r.orders, net: r.net, target: r.target,
-        gross: r.net, amount: r.net
-      };
-    });
-
-    rawData = parsedRows;
-    window.__rawData = rawData;
-    loadingState.style.display = 'none';
-    
-    filterBar.classList.add('show');
-    kpiPanel.style.display = 'grid';
-    chartsPanel.style.display = 'grid';
-    tablePanel.style.display = 'block';
-    if ($('executiveSummary')) $('executiveSummary').style.display = 'block';
-    dayFrom.value = 1; dayTo.value = 31;
-    
-    populateFilters(rawData);
-    applyFiltersAndRender();
-    showToast(`Loaded ${data.length} rows from database`, 'success');
-  }
-
-  loadFromSupabase();
+  });
 
   function populateFilters(data) {
     const years = [...new Set(data.map(r => r.year).filter(y => y != null))].sort((a,b) => a-b);
@@ -2104,11 +2090,9 @@ ${clone.outerHTML}
     
     const wb = XLSX.utils.book_new();
     
-    // 1. EXACT EXPORT FROM DETAILED TABLE
     const table = document.getElementById('dataTable');
     const aoa = [];
     
-    // Extract multi-level headers correctly
     table.querySelectorAll('thead tr').forEach(tr => {
       const row = [];
       tr.querySelectorAll('th').forEach(th => {
@@ -2123,7 +2107,6 @@ ${clone.outerHTML}
       aoa.push(row);
     });
     
-    // Extract sorted, filtered rows + the subtotal row exactly as seen
     table.querySelectorAll('tbody tr').forEach(tr => {
       const row = [];
       tr.querySelectorAll('td').forEach(td => {
@@ -2135,7 +2118,6 @@ ${clone.outerHTML}
 
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     
-    // Auto-size columns for readability
     ws['!cols'] = [
       {wch:24},{wch:14},{wch:6},{wch:11},
       {wch:9},{wch:13},{wch:9},{wch:8},
@@ -2146,7 +2128,6 @@ ${clone.outerHTML}
     
     XLSX.utils.book_append_sheet(wb, ws, 'Detailed Table');
 
-    // 2. YOY COMPARISON (if data exists)
     const ctxY = getMonthContext();
     const prevY = ctxY.curY - 1;
     const yoyRows = [['Month', 'LY Sales', 'LY CC', 'LY AT', 'LY Days', 'TY Sales', 'TY CC', 'TY AT', 'TY Days', 'Sales Growth %', 'CC Growth %', 'AT Growth %']];
@@ -2160,7 +2141,6 @@ ${clone.outerHTML}
     }
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(yoyRows), 'YoY Compare');
 
-    // Export the file
     const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
     const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
@@ -2179,7 +2159,6 @@ ${clone.outerHTML}
     const tableEl = document.getElementById('dataTable');
     const clone = tableEl.cloneNode(true);
     
-    // Remove hidden sorting classes from clone so they don't print
     clone.querySelectorAll('th').forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
     clone.querySelectorAll('tr').forEach(tr => tr.classList.remove('missed-target'));
 
